@@ -8,8 +8,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const darkGray = lipgloss.Color("#767676")
+// const darkGray = lipgloss.Color("#767676")
 const lightGreen = lipgloss.Color("#04B575")
+const dotSeparator = "•"
 
 type game struct {
 	guesses      []int
@@ -30,6 +31,20 @@ func (m model) Init() tea.Cmd {
 	return tea.Batch(textinput.Blink, tea.EnterAltScreen)
 }
 
+func (m model) View() string {
+	return lipgloss.Place(
+		m.width,
+		m.height,
+		lipgloss.Center,
+		lipgloss.Center,
+		lipgloss.JoinHorizontal(
+			lipgloss.Center,
+			m.inputAndStatusArea(),
+			m.optionsAndAnswersArea(),
+		),
+	)
+}
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
@@ -39,20 +54,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyEnter:
 			val := m.textInput.Value()
 			m.textInput.Reset()
-			for _, guessIdx := range m.game.guesses {
-				if m.answers[guessIdx] == val {
-					return m, nil
-				}
-			}
-			exists := false
-			for idx, answer := range m.game.answers {
-				if answer == val {
-					m.guesses = append(m.guesses, idx)
-					exists = true
-				}
+
+			if len(val) == 0 {
+				return m, nil
 			}
 
-			if !exists {
+			if m.game.isAlreadyGuessed(val) {
+				return m, nil
+			}
+
+			idxAtAnswer := m.game.isCorrectGuess(val)
+			if idxAtAnswer != -1 {
+				m.game.guesses = append(m.game.guesses, idxAtAnswer)
+			} else {
 				if m.game.attemptsLeft > 0 {
 					m.game.attemptsLeft--
 				}
@@ -71,34 +85,86 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m *model) gameCompleted() bool {
-	return len(m.game.answers) == len(m.game.guesses)
+func (g *game) isAlreadyGuessed(val string) bool {
+	for _, guessIdx := range g.guesses {
+		if g.answers[guessIdx] == val {
+			return true
+		}
+	}
+	return false
+}
+
+func (g *game) isCorrectGuess(val string) int {
+	for idx, answer := range g.answers {
+		if val == answer {
+			return idx
+		}
+	}
+	return -1
+}
+
+func (m *model) inputAndStatusArea() string {
+	if m.attemptsOver() || m.gameCompleted() {
+		return m.wrapComponentWithBorder(m.status)
+	}
+
+	inputArea := fmt.Sprintf(
+		"Guess a word from the given letters ...\n\n%s",
+		m.textInput.View(),
+	)
+
+	h := lipgloss.Height
+	avlHeight := m.height/2 - h(inputArea) - h(m.status)
+	vEmptySpace := lipgloss.NewStyle().Height(avlHeight).Render("")
+
+	credits := creditStyle().Render("word-connector")
+
+	w := lipgloss.Width
+	avlWidth := (m.width/2 - m.width/10) - w(m.status) - w(credits)
+	hEmptySpace := statusBarStyle().Width(avlWidth).Render("")
+
+	statusBar := lipgloss.JoinHorizontal(lipgloss.Center, m.status, hEmptySpace, credits)
+
+	return m.wrapComponentWithBorder(
+		lipgloss.JoinVertical(
+			lipgloss.Left,
+			inputArea,
+			vEmptySpace,
+			statusBar,
+		),
+	)
 }
 
 func (m *model) updateStatus() {
-	if m.game.attemptsLeft == 0 {
-		m.status = lipgloss.
-			NewStyle().
-			Foreground(lipgloss.Color("#DC3535")).
-			Bold(true).
-			Render("You've lost the game :(")
+	if m.attemptsOver() {
+		m.status = getEndMessage(
+			"#DC3535",
+			"You've lost the game :(",
+		)
 	} else if m.gameCompleted() {
-		m.status = lipgloss.
-			NewStyle().
-			Foreground(lipgloss.Color(lightGreen)).
-			Render(":) You've won the game 🎉")
+		m.status = getEndMessage(
+			string(lightGreen),
+			":) You've won the game 🎉",
+		)
 	} else {
-		m.status = lipgloss.
-			NewStyle().
-			Foreground(lipgloss.Color(darkGray)).
-			Render(
-				fmt.Sprintf(
-					"%d words to go\n%d attempts left",
-					len(m.game.answers)-len(m.game.guesses),
-					m.game.attemptsLeft,
-				),
-			)
+		progressMsg := getStatusMessage(len(m.game.answers)-len(m.game.guesses), "words to go")
+		attemptsMsg := getStatusMessage(m.game.attemptsLeft, "attempts left")
+
+		m.status = lipgloss.JoinHorizontal(
+			lipgloss.Center,
+			statusStyle("#FF5F87").MarginLeft(1).Render(progressMsg),
+			statusStyle("#FFFDF5").Render(dotSeparator),
+			statusStyle("#A550DF").Render(attemptsMsg),
+		)
 	}
+}
+
+func (m *model) attemptsOver() bool {
+	return m.game.attemptsLeft <= 0
+}
+
+func (m *model) gameCompleted() bool {
+	return len(m.game.answers) == len(m.game.guesses)
 }
 
 func (m *model) wrapComponentWithBorder(component string) string {
@@ -110,61 +176,19 @@ func (m *model) wrapComponentWithBorder(component string) string {
 		Render(component)
 }
 
-func (m *model) inputAndStatusArea() string {
-	var inputArea string
-
-	if m.game.attemptsLeft <= 0 || m.gameCompleted() {
-		return m.wrapComponentWithBorder(m.status)
-	}
-
-	inputArea = fmt.Sprintf(
-		"Guess a word from the given letters ...\n\n%s",
-		m.textInput.View(),
-	)
-
-	avlHeight := m.height / 2
-	avlHeight -= lipgloss.Height(inputArea)
-	avlHeight -= lipgloss.Height(m.status)
-
-	emptySpace := lipgloss.NewStyle().Height(avlHeight).Render("")
-
-	return m.wrapComponentWithBorder(lipgloss.JoinVertical(lipgloss.Left, inputArea, emptySpace, m.status))
-}
-
-func (m *model) renderAnswers() string {
-	ans := []string{}
-
-	for _, guessIdx := range m.game.guesses {
-		ans = append(
-			ans,
-			lipgloss.
-				NewStyle().
-				Bold(true).
-				Foreground(lightGreen).
-				Render(m.game.answers[guessIdx]),
-		)
-	}
-	ansRender := lipgloss.JoinVertical(lipgloss.Left, ans...)
-
-	return ansRender
-}
-
 func (m *model) optionsAndAnswersArea() string {
 	options := []string{}
 
 	for _, option := range m.game.options {
 		options = append(
 			options,
-			lipgloss.
-				NewStyle().
-				Border(lipgloss.NormalBorder()).
-				PaddingLeft(1).
-				PaddingRight(1).
+			optionsStyle().
 				Render(string(option)),
 		)
 	}
 
 	optionsArea := lipgloss.JoinHorizontal(lipgloss.Center, options...)
+
 	answersArea := m.renderAnswers()
 
 	availableHeight := m.height / 2
@@ -188,18 +212,19 @@ func (m *model) optionsAndAnswersArea() string {
 	)
 }
 
-func (m model) View() string {
-	return lipgloss.Place(
-		m.width,
-		m.height,
-		lipgloss.Center,
-		lipgloss.Center,
-		lipgloss.JoinHorizontal(
-			lipgloss.Center,
-			m.inputAndStatusArea(),
-			m.optionsAndAnswersArea(),
-		),
-	)
+func (m *model) renderAnswers() string {
+	ans := []string{}
+
+	for _, guessIdx := range m.game.guesses {
+		ans = append(
+			ans,
+			correctAnswerStyle().
+				Render(m.game.answers[guessIdx]),
+		)
+	}
+	ansRender := lipgloss.JoinVertical(lipgloss.Left, ans...)
+
+	return ansRender
 }
 
 func initialModel() model {
@@ -227,4 +252,8 @@ func initialModel() model {
 	m.updateStatus()
 
 	return m
+}
+
+func getStatusMessage(status int, message string) string {
+	return fmt.Sprintf("%d %s", status, message)
 }
